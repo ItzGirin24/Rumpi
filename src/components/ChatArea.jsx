@@ -287,7 +287,7 @@ const ChatArea = ({ conversationId, contactId, conversations, onConversationCrea
             <div className={`text-6xl mb-4 ${
               theme === 'dark' ? 'text-[#AEBAC1]' : 'text-gray-400'
             }`}>
-              💬
+              <img src="/RumpiLogo.png" alt="Rumpi Logo" className="w-16 h-16 mx-auto" />
             </div>
             <h2 className={`text-2xl font-light mb-2 ${
               theme === 'dark' ? 'text-[#E9EDEF]' : 'text-gray-800'

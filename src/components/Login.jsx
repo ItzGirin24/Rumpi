@@ -42,7 +42,7 @@ const Login = () => {
       }`}>
         <CardHeader className="text-center">
           <div className="mx-auto mb-4 w-16 h-16 bg-[#25D366] rounded-full flex items-center justify-center">
-            <span className="text-2xl">💬</span>
+            <img src="/RumpiLogo.png" alt="Rumpi Logo" className="w-8 h-8" />
           </div>
           <CardTitle className={`text-2xl font-bold ${
             theme === 'dark' ? 'text-[#E9EDEF]' : 'text-gray-800'
