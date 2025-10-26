@@ -99,7 +99,7 @@ const MainApp = () => {
           <div className={`text-6xl mb-4 ${
             theme === 'dark' ? 'text-[#AEBAC1]' : 'text-gray-400'
           }`}>
-            <img src="/RumpiLogo.png" alt="Rumpi Logo" className="w-16 h-16 mx-auto" />
+            <img src="/Rumpi.webp" alt="Rumpi Logo" className="w-16 h-16 mx-auto" />
           </div>
           <p className={`text-lg ${
             theme === 'dark' ? 'text-[#E9EDEF]' : 'text-gray-800'
