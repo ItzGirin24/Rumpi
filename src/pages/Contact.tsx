@@ -28,7 +28,7 @@ const Contact = () => {
     setIsSubmitting(true);
 
     try {
-      await emailjs.send(
+      const result = await emailjs.send(
         'service_0tgboxl',
         'template_197yc9q',
         {
@@ -36,16 +36,18 @@ const Contact = () => {
           from_email: formData.email,
           subject: formData.subject,
           message: formData.message,
-          to_email: 'girin2423@gmail.com'
+          reply_to: formData.email
         },
-        'YOUR_PUBLIC_KEY' // This will need to be replaced with actual public key
+        'rwtBxYPpf3Yw1-dPz'
       );
 
+      console.log('Email sent successfully:', result);
       setIsSubmitted(true);
       setFormData({ name: '', email: '', subject: '', message: '' });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Email send failed:', error);
-      alert('Failed to send message. Please try again.');
+      const errorMessage = error?.text || error?.message || 'Unknown error occurred';
+      alert(`Failed to send message: ${errorMessage}. Please try again or contact support.`);
     } finally {
       setIsSubmitting(false);
     }
