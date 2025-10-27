@@ -47,6 +47,7 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+<<<<<<< HEAD
         sidebar: {
           DEFAULT: "hsl(var(--sidebar-background))",
           foreground: "hsl(var(--sidebar-foreground))",
@@ -57,6 +58,28 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+=======
+        editor: {
+          panel: "hsl(var(--editor-panel))",
+          controls: "hsl(var(--editor-controls))",
+        },
+        slider: {
+          track: "hsl(var(--slider-track))",
+          thumb: "hsl(var(--slider-thumb))",
+        },
+      },
+      backgroundImage: {
+        'gradient-primary': 'var(--gradient-primary)',
+        'gradient-subtle': 'var(--gradient-subtle)',
+      },
+      boxShadow: {
+        'soft': 'var(--shadow-soft)',
+        'medium': 'var(--shadow-medium)',
+        'strong': 'var(--shadow-strong)',
+      },
+      transitionTimingFunction: {
+        'smooth': 'cubic-bezier(0.4, 0, 0.2, 1)',
+>>>>>>> 677dc3b87794334978817b9d4d315f91ccc2ac1b
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -80,6 +103,7 @@ export default {
             height: "0",
           },
         },
+<<<<<<< HEAD
         "fade-in": {
           from: {
             opacity: "0",
@@ -106,16 +130,21 @@ export default {
             boxShadow: "0 0 40px hsl(320 85% 65% / 0.5)",
           },
         },
+=======
+>>>>>>> 677dc3b87794334978817b9d4d315f91ccc2ac1b
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+<<<<<<< HEAD
         "fade-in": "fade-in 0.8s ease-out",
         "slide-up": "slide-up 0.8s ease-out",
         "glow": "glow 2s ease-in-out infinite",
       },
       backgroundImage: {
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",
+=======
+>>>>>>> 677dc3b87794334978817b9d4d315f91ccc2ac1b
       },
     },
   },
