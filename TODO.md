@@ -1,0 +1,2 @@
+- [x] Hapus class "hidden" dari canvas agar preview before/after berfungsi dengan benar.
+- [x] Jalankan aplikasi dan uji preview before/after dengan mengubah adjustment.

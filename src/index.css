@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    --background: 214 32% 97%;
+    --foreground: 215 25% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 15%;
+
+    --primary: 213 94% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 214 20% 92%;
+    --secondary-foreground: 215 25% 15%;
+
+    --muted: 214 20% 95%;
+    --muted-foreground: 215 15% 45%;
+
+    --accent: 213 94% 58%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 20% 88%;
+    --input: 214 20% 88%;
+    --ring: 213 94% 58%;
+
+    --radius: 0.75rem;
+
+    --editor-panel: 0 0% 100%;
+    --editor-controls: 214 15% 97%;
+    --slider-track: 214 15% 88%;
+    --slider-thumb: 213 94% 58%;
+    
+    --gradient-primary: linear-gradient(135deg, hsl(213, 94%, 58%), hsl(213, 90%, 65%));
+    --gradient-subtle: linear-gradient(180deg, hsl(214, 32%, 99%), hsl(214, 32%, 97%));
+    
+    --shadow-soft: 0 2px 8px -2px hsl(215 25% 15% / 0.08);
+    --shadow-medium: 0 4px 16px -4px hsl(215 25% 15% / 0.12);
+    --shadow-strong: 0 8px 32px -8px hsl(215 25% 15% / 0.16);
+    
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .dark {
+    --background: 215 28% 10%;
+    --foreground: 214 20% 95%;
+
+    --card: 215 25% 12%;
+    --card-foreground: 214 20% 95%;
+
+    --popover: 215 25% 12%;
+    --popover-foreground: 214 20% 95%;
+
+    --primary: 213 94% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 215 20% 18%;
+    --secondary-foreground: 214 20% 95%;
+
+    --muted: 215 20% 15%;
+    --muted-foreground: 215 15% 60%;
+
+    --accent: 213 94% 58%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 215 20% 22%;
+    --input: 215 20% 22%;
+    --ring: 213 94% 58%;
+
+    --editor-panel: 215 25% 12%;
+    --editor-controls: 215 20% 15%;
+    --slider-track: 215 20% 22%;
+    --slider-thumb: 213 94% 58%;
+    
+    --gradient-primary: linear-gradient(135deg, hsl(213, 94%, 58%), hsl(213, 90%, 65%));
+    --gradient-subtle: linear-gradient(180deg, hsl(215, 28%, 12%), hsl(215, 28%, 10%));
+    
+    --shadow-soft: 0 2px 8px -2px hsl(0 0% 0% / 0.3);
+    --shadow-medium: 0 4px 16px -4px hsl(0 0% 0% / 0.4);
+    --shadow-strong: 0 8px 32px -8px hsl(0 0% 0% / 0.5);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+}
