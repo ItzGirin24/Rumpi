@@ -3,7 +3,19 @@ import { Phone, PhoneOff, Video, VideoOff, Mic, MicOff, Volume2, VolumeX } from 
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext_new';
 import { getUserById } from '../services/firestoreService';
-import { getSocket, initializeWebRTC } from '../services/callService';
+import { 
+  initializeSocket, 
+  getSocket, 
+  initializeLocalStream, 
+  createPeerConnection, 
+  addLocalStreamToPeerConnection,
+  startCall as startCallService,
+  acceptCall as acceptCallService,
+  endCall as endCallService,
+  getCurrentRoomId,
+  closePeerConnection,
+  stopLocalStream
+} from '../services/callService';
 
 const CallModal = ({ isOpen, onClose, contactId, callType, isIncoming = false, callerId = null }) => {
   const { theme } = useTheme();
@@ -15,34 +27,27 @@ const CallModal = ({ isOpen, onClose, contactId, callType, isIncoming = false, c
   const [isSpeakerOff, setIsSpeakerOff] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [isRinging, setIsRinging] = useState(isIncoming);
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
+  const [error, setError] = useState(null);
+  const [currentRoomId, setCurrentRoomId] = useState(null);
+  const [currentCallId, setCurrentCallId] = useState(null);
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const peerConnectionRef = useRef(null);
-  const localStreamRef = useRef(null);
-  const remoteStreamRef = useRef(null);
-  const ringAudioRef = useRef(null);
   const callTimerRef = useRef(null);
 
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && user) {
       loadContact();
-      if (!isIncoming) {
-        // For outgoing calls, initialize WebRTC and start the call
-        initializeCall();
-      } else {
-        // For incoming calls, just setup the UI and wait for signaling
-        setupIncomingCall();
-      }
-      if (isIncoming) {
-        playRingingSound();
-      }
+      initializeCallConnection();
     }
 
     return () => {
       cleanup();
     };
-  }, [isOpen, contactId, callType, isIncoming]);
+  }, [isOpen, contactId, user]);
 
   useEffect(() => {
     if (isConnected) {
@@ -71,272 +76,188 @@ const CallModal = ({ isOpen, onClose, contactId, callType, isIncoming = false, c
     }
   };
 
-  const initializeCall = async () => {
+  const initializeCallConnection = async () => {
     try {
-      // Get user media
-      const constraints = {
-        audio: true,
-        video: callType === 'video' ? { width: 640, height: 480 } : false
-      };
+      setError(null);
+      setIsRinging(true);
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      localStreamRef.current = stream;
+      // Get local media stream
+      const stream = await initializeLocalStream(callType);
+      setLocalStream(stream);
 
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
 
-      // Initialize WebRTC peer connection
-      const configuration = {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' }
-        ]
-      };
-
-      peerConnectionRef.current = new RTCPeerConnection(configuration);
-
-      // Add local stream to peer connection
-      stream.getTracks().forEach(track => {
-        peerConnectionRef.current.addTrack(track, stream);
+      // Create peer connection
+      const pc = createPeerConnection((remoteMediaStream) => {
+        console.log('Remote stream received:', remoteMediaStream);
+        setRemoteStream(remoteMediaStream);
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = remoteMediaStream;
+        }
       });
 
-      // Handle remote stream
-      peerConnectionRef.current.ontrack = (event) => {
-        remoteStreamRef.current = event.streams[0];
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.streams[0];
-        }
-      };
+      if (!pc) {
+        throw new Error('Failed to create peer connection');
+      }
 
-      // Handle ICE candidates
-      peerConnectionRef.current.onicecandidate = (event) => {
-        if (event.candidate) {
-          // Send ICE candidate to remote peer via signaling
-          sendSignalingMessage({
-            type: 'ice-candidate',
-            candidate: event.candidate,
-            targetUserId: contactId
-          });
-        }
-      };
+      peerConnectionRef.current = pc;
 
-      // Handle connection state changes
-      peerConnectionRef.current.onconnectionstatechange = () => {
-        if (peerConnectionRef.current.connectionState === 'connected') {
+      // Add local stream to peer connection
+      addLocalStreamToPeerConnection(stream);
+
+      // Set up WebRTC event handlers
+      pc.onconnectionstatechange = () => {
+        console.log('Connection state:', pc.connectionState);
+        if (pc.connectionState === 'connected') {
           setIsConnected(true);
           setIsRinging(false);
-          stopRingingSound();
+        } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          setIsConnected(false);
         }
       };
 
-      // Listen for signaling messages
-      const socket = getSocket();
-      if (socket) {
-        socket.on('answer', async (data) => {
-          console.log('Received answer for outgoing call:', data);
-          if (data.from !== user.uid) {
-            try {
-              await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
-            } catch (error) {
-              console.error('Error handling answer in outgoing call:', error);
-            }
-          }
-        });
-
-        socket.on('ice_candidate', async (data) => {
-          console.log('Received ICE candidate for outgoing call:', data);
-          if (data.from !== user.uid && data.candidate) {
-            try {
-              await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
-            } catch (error) {
-              console.error('Error adding ICE candidate in outgoing call:', error);
-            }
-          }
-        });
-      }
-
+      // For outgoing calls, create and send offer
       if (!isIncoming) {
-        // Create offer for outgoing call
-        const offer = await peerConnectionRef.current.createOffer();
-        await peerConnectionRef.current.setLocalDescription(offer);
+        const roomId = `call-${user.uid}-${contactId}-${Date.now()}`;
+        setCurrentRoomId(roomId);
 
-        // Send offer to remote peer
-        sendSignalingMessage({
-          type: 'call-offer',
-          offer: offer,
-          callType: callType,
-          targetUserId: contactId
-        });
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        // Start the call through the service
+        const callData = await startCallService(user.uid, contactId, callType);
+        setCurrentCallId(callData.id);
+
+        // Send offer through socket
+        const socket = getSocket();
+        if (socket) {
+          socket.emit('offer', {
+            room: roomId,
+            offer: offer,
+            callType: callType,
+            callerId: user.uid,
+            receiverId: contactId
+          });
+        }
+      } else if (callerId) {
+        // For incoming calls, set up room ID and wait for offer
+        setCurrentRoomId(callerId);
       }
+
+      // Listen for WebRTC signaling messages
+      setupSignalingListeners();
 
     } catch (error) {
       console.error('Error initializing call:', error);
+      setError(error.message);
+      setIsRinging(false);
     }
   };
 
-  const sendSignalingMessage = (message) => {
+  const setupSignalingListeners = () => {
     const socket = getSocket();
-    if (!socket) {
-      console.error('Socket not connected');
-      return;
-    }
+    if (!socket) return;
 
-    // Send signaling message through Socket.IO
-    if (message.type === 'ice-candidate') {
-      socket.emit('ice_candidate', {
-        room: message.roomId || 'current-call-room',
-        candidate: message.candidate
-      });
-    } else if (message.type === 'call-offer') {
-      socket.emit('offer', {
-        room: message.roomId || 'current-call-room',
-        offer: message.offer
-      });
-    } else if (message.type === 'call-answer') {
-      socket.emit('answer', {
-        room: message.roomId || 'current-call-room',
-        answer: message.answer
-      });
-    }
+    // Handle offer (for incoming calls)
+    socket.on('offer', async (data) => {
+      console.log('Received offer:', data);
+      if (data.callerId !== user.uid && (data.receiverId === user.uid || data.receiverId === contactId)) {
+        try {
+          if (peerConnectionRef.current && data.offer) {
+            await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.offer));
+            
+            const answer = await peerConnectionRef.current.createAnswer();
+            await peerConnectionRef.current.setLocalDescription(answer);
 
-    console.log('Sent signaling message:', message);
-  };
+            socket.emit('answer', {
+              room: data.room,
+              answer: answer,
+              calleeId: data.callerId
+            });
 
-  const playRingingSound = () => {
-    // Skip ringing sound to avoid audio issues
-    console.log('Ringing sound skipped to avoid audio context issues');
-  };
-
-  const stopRingingSound = () => {
-    if (ringAudioRef.current) {
-      ringAudioRef.current.pause();
-      ringAudioRef.current.currentTime = 0;
-    }
-  };
-
-  const setupIncomingCall = async () => {
-    // Setup WebRTC connection for incoming call
-    try {
-      // Get user media
-      const constraints = {
-        audio: true,
-        video: callType === 'video' ? { width: 640, height: 480 } : false
-      };
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      localStreamRef.current = stream;
-
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
+            setCurrentRoomId(data.room);
+          }
+        } catch (error) {
+          console.error('Error handling offer:', error);
+        }
       }
+    });
 
-      // Initialize WebRTC peer connection
-      const configuration = {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' }
-        ]
-      };
-
-      peerConnectionRef.current = new RTCPeerConnection(configuration);
-
-      // Add local stream to peer connection
-      stream.getTracks().forEach(track => {
-        peerConnectionRef.current.addTrack(track, stream);
-      });
-
-      // Handle remote stream
-      peerConnectionRef.current.ontrack = (event) => {
-        remoteStreamRef.current = event.streams[0];
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = event.streams[0];
-        }
-      };
-
-      // Handle ICE candidates
-      peerConnectionRef.current.onicecandidate = (event) => {
-        if (event.candidate) {
-          sendSignalingMessage({
-            type: 'ice-candidate',
-            candidate: event.candidate,
-            targetUserId: callerId || contactId
-          });
-        }
-      };
-
-      // Handle connection state changes
-      peerConnectionRef.current.onconnectionstatechange = () => {
-        if (peerConnectionRef.current.connectionState === 'connected') {
+    // Handle answer (for outgoing calls)
+    socket.on('answer', async (data) => {
+      console.log('Received answer:', data);
+      try {
+        if (peerConnectionRef.current && data.answer) {
+          await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
           setIsConnected(true);
           setIsRinging(false);
-          stopRingingSound();
         }
-      };
-
-      // Listen for signaling messages
-      const socket = getSocket();
-      if (socket) {
-        socket.on('offer', async (data) => {
-          console.log('Received offer:', data);
-          if (data.from !== user.uid) {
-            try {
-              await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.offer));
-              const answer = await peerConnectionRef.current.createAnswer();
-              await peerConnectionRef.current.setLocalDescription(answer);
-
-              sendSignalingMessage({
-                type: 'call-answer',
-                answer: answer,
-                targetUserId: data.from
-              });
-            } catch (error) {
-              console.error('Error handling offer:', error);
-            }
-          }
-        });
-
-        socket.on('answer', async (data) => {
-          console.log('Received answer:', data);
-          if (data.from !== user.uid) {
-            try {
-              await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(data.answer));
-            } catch (error) {
-              console.error('Error handling answer:', error);
-            }
-          }
-        });
-
-        socket.on('ice_candidate', async (data) => {
-          console.log('Received ICE candidate:', data);
-          if (data.from !== user.uid && data.candidate) {
-            try {
-              await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
-            } catch (error) {
-              console.error('Error adding ICE candidate:', error);
-            }
-          }
-        });
+      } catch (error) {
+        console.error('Error handling answer:', error);
       }
+    });
 
-    } catch (error) {
-      console.error('Error setting up WebRTC for incoming call:', error);
-    }
+    // Handle ICE candidates
+    socket.on('ice_candidate', async (data) => {
+      console.log('Received ICE candidate:', data);
+      try {
+        if (peerConnectionRef.current && data.candidate) {
+          await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(data.candidate));
+        }
+      } catch (error) {
+        console.error('Error adding ICE candidate:', error);
+      }
+    });
+
+    // Handle call accepted
+    socket.on('call_accepted', async (data) => {
+      console.log('Call accepted:', data);
+      setIsConnected(true);
+      setIsRinging(false);
+    });
+
+    // Handle call ended
+    socket.on('call_ended', (data) => {
+      console.log('Call ended by remote:', data);
+      cleanup();
+      onClose();
+    });
+
+    // Handle participant left
+    socket.on('participant_left', (data) => {
+      console.log('Participant left:', data);
+      cleanup();
+      onClose();
+    });
   };
 
   const acceptCall = async () => {
-    // Handle incoming call acceptance
-    setIsRinging(false);
-    stopRingingSound();
+    try {
+      setIsRinging(false);
+      
+      // Accept call through the service
+      if (isIncoming && callerId) {
+        const roomId = `call-${callerId}-${user.uid}-${Date.now()}`;
+        setCurrentRoomId(roomId);
+        
+        await acceptCallService(null, roomId);
 
-    // Notify server that call is accepted
-    const socket = getSocket();
-    if (socket) {
-      socket.emit('accept_call', { roomId: 'current-call-room' });
+        const socket = getSocket();
+        if (socket) {
+          socket.emit('join_room', { room: roomId });
+        }
+      }
+    } catch (error) {
+      console.error('Error accepting call:', error);
+      setError(error.message);
     }
   };
 
   const toggleMute = () => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach(track => {
+    if (localStream) {
+      localStream.getAudioTracks().forEach(track => {
         track.enabled = isMuted;
       });
       setIsMuted(!isMuted);
@@ -344,8 +265,8 @@ const CallModal = ({ isOpen, onClose, contactId, callType, isIncoming = false, c
   };
 
   const toggleVideo = () => {
-    if (localStreamRef.current && callType === 'video') {
-      localStreamRef.current.getVideoTracks().forEach(track => {
+    if (localStream && callType === 'video') {
+      localStream.getVideoTracks().forEach(track => {
         track.enabled = isVideoOff;
       });
       setIsVideoOff(!isVideoOff);
@@ -359,24 +280,35 @@ const CallModal = ({ isOpen, onClose, contactId, callType, isIncoming = false, c
     }
   };
 
-  const endCall = () => {
+  const handleEndCall = async () => {
+    try {
+      await endCallService(currentRoomId, currentCallId);
+    } catch (error) {
+      console.error('Error ending call:', error);
+    }
     cleanup();
     onClose();
   };
 
   const cleanup = () => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(track => track.stop());
+    // Stop local stream
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      setLocalStream(null);
     }
+    
+    // Close peer connection
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
     }
-    if (callTimerRef.current) {
-      clearInterval(callTimerRef.current);
-    }
-    stopRingingSound();
+    
+    setRemoteStream(null);
     setIsConnected(false);
+    setIsRinging(false);
     setCallDuration(0);
+    setCurrentRoomId(null);
+    setCurrentCallId(null);
   };
 
   const formatDuration = (seconds) => {
@@ -402,7 +334,9 @@ const CallModal = ({ isOpen, onClose, contactId, callType, isIncoming = false, c
           <p className={`text-sm ${
             theme === 'dark' ? 'text-[#8696A0]' : 'text-[#667781]'
           }`}>
-            {isRinging ? 'Calling...' : isConnected ? formatDuration(callDuration) : 'Connecting...'}
+            {error ? `Error: ${error}` : 
+             isRinging ? (isIncoming ? 'Incoming call...' : 'Calling...') : 
+             isConnected ? formatDuration(callDuration) : 'Connecting...'}
           </p>
         </div>
 
@@ -425,12 +359,17 @@ const CallModal = ({ isOpen, onClose, contactId, callType, isIncoming = false, c
           </div>
         )}
 
-        {/* Audio Visualization for Audio Calls */}
+        {/* Audio Call - Show contact info */}
         {callType === 'audio' && (
-          <div className="flex justify-center items-center h-32 mb-4">
-            <div className="w-24 h-24 bg-green-500 rounded-full flex items-center justify-center">
+          <div className="flex flex-col items-center justify-center h-32 mb-4">
+            <div className="w-20 h-20 rounded-full bg-green-500 flex items-center justify-center mb-2">
               <Phone className="h-8 w-8 text-white" />
             </div>
+            <p className={`text-sm ${
+              theme === 'dark' ? 'text-[#8696A0]' : 'text-[#667781]'
+            }`}>
+              {isConnected ? 'Call connected' : isRinging ? 'Ringing...' : 'Connecting...'}
+            </p>
           </div>
         )}
 
@@ -439,7 +378,7 @@ const CallModal = ({ isOpen, onClose, contactId, callType, isIncoming = false, c
           {isIncoming && !isConnected ? (
             <div className="flex justify-center gap-4">
               <button
-                onClick={endCall}
+                onClick={handleEndCall}
                 className="p-4 bg-red-500 hover:bg-red-600 rounded-full transition-colors"
               >
                 <PhoneOff className="h-6 w-6 text-white" />
@@ -513,7 +452,7 @@ const CallModal = ({ isOpen, onClose, contactId, callType, isIncoming = false, c
               </button>
 
               <button
-                onClick={endCall}
+                onClick={handleEndCall}
                 className="p-4 bg-red-500 hover:bg-red-600 rounded-full transition-colors"
               >
                 <PhoneOff className="h-6 w-6 text-white" />

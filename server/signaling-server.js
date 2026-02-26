@@ -22,7 +22,7 @@ const io = socketIo(server, {
 });
 
 // Store active calls and users
-const activeCalls = new Map(); // callId -> { caller, receiver, participants: Set }
+const activeCalls = new Map(); // roomId -> { caller, receiver, participants: Set, callType }
 const userSockets = new Map(); // userId -> socketId
 
 io.on('connection', (socket) => {
@@ -45,13 +45,20 @@ io.on('connection', (socket) => {
     if (!activeCalls.has(room)) {
       activeCalls.set(room, {
         participants: new Set(),
-        caller: socket.userId,
-        receiver: null
+        caller: null,
+        receiver: null,
+        callType: 'audio'
       });
     }
 
     // Add participant to call
     activeCalls.get(room).participants.add(socket.userId);
+
+    // Notify others in the room
+    socket.to(room).emit('participant_joined', {
+      roomId: room,
+      userId: socket.userId
+    });
   });
 
   // Leave call room
@@ -64,6 +71,12 @@ io.on('connection', (socket) => {
     if (activeCalls.has(room)) {
       activeCalls.get(room).participants.delete(socket.userId);
 
+      // Notify others in the room
+      socket.to(room).emit('participant_left', {
+        roomId: room,
+        userId: socket.userId
+      });
+
       // If no participants left, clean up the call
       if (activeCalls.get(room).participants.size === 0) {
         activeCalls.delete(room);
@@ -73,20 +86,32 @@ io.on('connection', (socket) => {
 
   // Handle WebRTC offer
   socket.on('offer', (data) => {
-    const { room, offer } = data;
-    console.log(`Received offer in room ${room} from ${socket.userId}`);
+    const { room, offer, callType, callerId, receiverId } = data;
+    console.log(`Received offer in room ${room} from ${socket.userId}, callType: ${callType}`);
 
     // Send offer to other participants in the room
-    socket.to(room).emit('offer', { offer, from: socket.userId });
+    socket.to(room).emit('offer', { 
+      offer, 
+      from: socket.userId,
+      room: room,
+      callType: callType,
+      callerId: callerId,
+      receiverId: receiverId
+    });
   });
 
   // Handle WebRTC answer
   socket.on('answer', (data) => {
-    const { room, answer } = data;
+    const { room, answer, calleeId } = data;
     console.log(`Received answer in room ${room} from ${socket.userId}`);
 
     // Send answer to other participants in the room
-    socket.to(room).emit('answer', { answer, from: socket.userId });
+    socket.to(room).emit('answer', { 
+      answer, 
+      from: socket.userId,
+      room: room,
+      calleeId: calleeId
+    });
   });
 
   // Handle ICE candidates
@@ -95,42 +120,73 @@ io.on('connection', (socket) => {
     console.log(`Received ICE candidate in room ${room} from ${socket.userId}`);
 
     // Send ICE candidate to other participants in the room
-    socket.to(room).emit('ice_candidate', { candidate, from: socket.userId });
+    socket.to(room).emit('ice_candidate', { 
+      candidate, 
+      from: socket.userId,
+      room: room
+    });
   });
 
   // Handle call initiation
   socket.on('start_call', (data) => {
-    const { callerId, receiverId, callType, roomId } = data;
+    const { callerId, receiverId, callType, roomId, callId } = data;
     console.log(`Call started: ${callerId} -> ${receiverId}, type: ${callType}, room: ${roomId}`);
 
-    // Notify receiver
+    // Store call info
+    activeCalls.set(roomId, {
+      participants: new Set([callerId]),
+      caller: callerId,
+      receiver: receiverId,
+      callType: callType
+    });
+
+    // Notify receiver through socket
     const receiverSocketId = userSockets.get(receiverId);
     if (receiverSocketId) {
       io.to(receiverSocketId).emit('incoming_call', {
         callerId,
         receiverId,
         callType,
-        roomId
+        roomId,
+        callId
       });
+      
+      // Also join the room
+      io.to(receiverSocketId).emit('join_room', { room: roomId });
     }
+
+    // Caller joins the room
+    socket.join(roomId);
   });
 
   // Handle call acceptance
   socket.on('accept_call', (data) => {
-    const { roomId } = data;
+    const { roomId, callId } = data;
     console.log(`Call accepted in room: ${roomId}`);
 
+    // Get call info
+    const callInfo = activeCalls.get(roomId);
+    if (callInfo) {
+      callInfo.participants.add(socket.userId);
+    }
+
     // Notify all participants in the room
-    io.to(roomId).emit('call_accepted', { roomId });
+    io.to(roomId).emit('call_accepted', { 
+      roomId,
+      acceptedBy: socket.userId
+    });
   });
 
   // Handle call rejection
   socket.on('reject_call', (data) => {
-    const { roomId, rejectedBy } = data;
-    console.log(`Call rejected in room: ${roomId} by ${rejectedBy}`);
+    const { roomId } = data;
+    console.log(`Call rejected in room: ${roomId}`);
 
     // Notify all participants in the room
-    io.to(roomId).emit('call_rejected', { roomId, rejectedBy });
+    io.to(roomId).emit('call_rejected', { 
+      roomId,
+      rejectedBy: socket.userId
+    });
   });
 
   // Handle call end
@@ -139,7 +195,10 @@ io.on('connection', (socket) => {
     console.log(`Call ended in room: ${roomId} by ${endedBy}`);
 
     // Notify all participants in the room
-    io.to(roomId).emit('call_ended', { roomId, endedBy });
+    io.to(roomId).emit('call_ended', { 
+      roomId,
+      endedBy
+    });
 
     // Clean up call
     activeCalls.delete(roomId);
@@ -160,7 +219,7 @@ io.on('connection', (socket) => {
         callData.participants.delete(socket.userId);
 
         // Notify other participants
-        socket.to(roomId).emit('participant_left', {
+        io.to(roomId).emit('participant_left', {
           roomId,
           userId: socket.userId
         });

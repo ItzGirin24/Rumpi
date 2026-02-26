@@ -1,5 +1,5 @@
 import io from 'socket.io-client';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import {
   collection,
   query,
@@ -8,10 +8,8 @@ import {
   doc,
   updateDoc,
   addDoc,
-  orderBy,
-  limit,
-  or,
-  getDoc
+  getDoc,
+  deleteDoc
 } from 'firebase/firestore';
 
 // Collection names
@@ -38,6 +36,16 @@ let socket = null;
 let localStream = null;
 let remoteStream = null;
 let peerConnection = null;
+let currentRoomId = null;
+
+// STUN/TURN servers for WebRTC
+const iceServers = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' }
+  ]
+};
 
 // Initialize Socket.IO
 export const initializeSocket = (userId) => {
@@ -45,8 +53,14 @@ export const initializeSocket = (userId) => {
     socket.disconnect();
   }
 
-  socket = io('http://localhost:8000', {
-    transports: ['websocket', 'polling']
+  // Connect to the signaling server
+  const serverUrl = 'http://localhost:8000';
+  
+  socket = io(serverUrl, {
+    transports: ['websocket', 'polling'],
+    reconnection: true,
+    reconnectionAttempts: 5,
+    reconnectionDelay: 1000
   });
 
   socket.on('connect', () => {
@@ -55,127 +69,226 @@ export const initializeSocket = (userId) => {
     socket.emit('register', userId);
   });
 
+  socket.on('disconnect', () => {
+    console.log('Disconnected from signaling server');
+  });
+
+  socket.on('connect_error', (error) => {
+    console.error('Socket connection error:', error);
+  });
+
   // Handle incoming calls
   socket.on('incoming_call', (data) => {
-    console.log('Incoming call received:', data);
-    // This will be handled by the component that listens for incoming calls
+    console.log('Incoming call received via socket:', data);
   });
 
-  // Handle call events
+  // Handle call accepted
   socket.on('call_accepted', (data) => {
     console.log('Call accepted:', data);
+    if (data.roomId) {
+      joinCallRoom(data.roomId);
+    }
   });
 
+  // Handle call rejected
   socket.on('call_rejected', (data) => {
     console.log('Call rejected:', data);
   });
 
+  // Handle call ended
   socket.on('call_ended', (data) => {
     console.log('Call ended:', data);
   });
 
-  // Handle WebRTC signaling
-  socket.on('offer', (data) => {
+  // Handle WebRTC signaling - OFFER
+  socket.on('offer', async (data) => {
     console.log('Received offer:', data);
+    // The CallModal will handle this through its own listener
+    window.dispatchEvent(new CustomEvent('webrtc-offer', { detail: data }));
   });
 
-  socket.on('answer', (data) => {
+  // Handle WebRTC signaling - ANSWER
+  socket.on('answer', async (data) => {
     console.log('Received answer:', data);
+    window.dispatchEvent(new CustomEvent('webrtc-answer', { detail: data }));
   });
 
-  socket.on('ice_candidate', (data) => {
+  // Handle WebRTC signaling - ICE CANDIDATE
+  socket.on('ice_candidate', async (data) => {
     console.log('Received ICE candidate:', data);
+    window.dispatchEvent(new CustomEvent('webrtc-ice-candidate', { detail: data }));
   });
 
+  // Handle participant joined
+  socket.on('participant_joined', (data) => {
+    console.log('Participant joined:', data);
+  });
+
+  // Handle participant left
   socket.on('participant_left', (data) => {
     console.log('Participant left:', data);
+    window.dispatchEvent(new CustomEvent('webrtc-participant-left', { detail: data }));
   });
 
   return socket;
 };
 
+// Join a call room
+const joinCallRoom = (roomId) => {
+  if (socket && roomId) {
+    socket.emit('join_room', { room: roomId });
+    currentRoomId = roomId;
+    console.log('Joined call room:', roomId);
+  }
+};
+
+// Leave a call room
+const leaveCallRoom = (roomId) => {
+  if (socket && roomId) {
+    socket.emit('leave_room', { room: roomId });
+    console.log('Left call room:', roomId);
+  }
+};
+
 // Get current socket instance
 export const getSocket = () => socket;
 
-// Initialize WebRTC
-export const initializeWebRTC = async () => {
+// Get current room ID
+export const getCurrentRoomId = () => currentRoomId;
+
+// Create peer connection
+export const createPeerConnection = (onRemoteStream) => {
   try {
-    // Get user media
-    localStream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: true
-    });
-
-    // Create peer connection
-    peerConnection = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' }
-      ]
-    });
-
-    // Add local stream to peer connection
-    localStream.getTracks().forEach(track => {
-      peerConnection.addTrack(track, localStream);
-    });
+    peerConnection = new RTCPeerConnection(iceServers);
 
     // Handle remote stream
     peerConnection.ontrack = (event) => {
+      console.log('Remote track received:', event.streams[0]);
       remoteStream = event.streams[0];
+      if (onRemoteStream) {
+        onRemoteStream(remoteStream);
+      }
     };
 
     // Handle ICE candidates
     peerConnection.onicecandidate = (event) => {
-      if (event.candidate && socket) {
-        // This will be set dynamically when starting/accepting calls
-        // For now, we'll emit to a placeholder room
+      if (event.candidate && socket && currentRoomId) {
         socket.emit('ice_candidate', {
-          room: 'current-call-room',
+          room: currentRoomId,
           candidate: event.candidate
         });
       }
     };
 
-    return { localStream, peerConnection };
+    // Handle connection state changes
+    peerConnection.onconnectionstatechange = () => {
+      console.log('Peer connection state:', peerConnection.connectionState);
+    };
+
+    // Handle ICE connection state changes
+    peerConnection.oniceconnectionstatechange = () => {
+      console.log('ICE connection state:', peerConnection.iceConnectionState);
+    };
+
+    return peerConnection;
   } catch (error) {
-    console.error('Error initializing WebRTC:', error);
+    console.error('Error creating peer connection:', error);
+    return null;
+  }
+};
+
+// Add local stream to peer connection
+export const addLocalStreamToPeerConnection = (stream) => {
+  if (peerConnection && stream) {
+    stream.getTracks().forEach(track => {
+      peerConnection.addTrack(track, stream);
+    });
+    console.log('Local stream added to peer connection');
+  }
+};
+
+// Get local stream
+export const getLocalStream = () => localStream;
+
+// Get remote stream
+export const getRemoteStream = () => remoteStream;
+
+// Get peer connection
+export const getPeerConnection = () => peerConnection;
+
+// Initialize local media stream
+export const initializeLocalStream = async (callType) => {
+  try {
+    const constraints = {
+      audio: true,
+      video: callType === 'video' ? { width: 640, height: 480, facingMode: 'user' } : false
+    };
+
+    localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    console.log('Local stream initialized');
+    return localStream;
+  } catch (error) {
+    console.error('Error initializing local stream:', error);
     throw error;
   }
 };
 
-// Start a call using WebRTC + Socket.IO
+// Close peer connection and streams
+export const closePeerConnection = () => {
+  if (peerConnection) {
+    peerConnection.close();
+    peerConnection = null;
+    console.log('Peer connection closed');
+  }
+};
+
+// Stop local stream
+export const stopLocalStream = () => {
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop());
+    localStream = null;
+    console.log('Local stream stopped');
+  }
+};
+
+// Start a call
 export const startCall = async (callerId, receiverId, callType) => {
   try {
     if (!socket) {
       throw new Error('Socket not initialized');
     }
 
-    console.log('Starting call from', callerId, 'to', receiverId);
+    console.log('Starting call from', callerId, 'to', receiverId, 'type:', callType);
 
     // Create unique room ID
     const roomId = `call-${callerId}-${receiverId}-${Date.now()}`;
+    currentRoomId = roomId;
 
-    // Create call data for tracking
+    // Create call data for tracking in Firestore
     const callData = {
       callerId,
       receiverId,
       callType,
       state: CALL_STATES.RINGING,
       startTime: new Date(),
-      roomId
+      roomId: roomId
     };
 
-    // Save call to Firestore first
+    // Save call to Firestore
     const docRef = await addDoc(collection(db, CALLS_COLLECTION), callData);
     console.log('Call saved to Firestore with ID:', docRef.id);
 
-    // Notify signaling server about the call
+    // Notify receiver about incoming call through socket
     socket.emit('start_call', {
       callerId,
       receiverId,
       callType,
-      roomId
+      roomId,
+      callId: docRef.id
     });
+
+    // Join the call room immediately
+    joinCallRoom(roomId);
 
     return { id: docRef.id, ...callData };
   } catch (error) {
@@ -184,71 +297,105 @@ export const startCall = async (callerId, receiverId, callType) => {
   }
 };
 
-// Accept a call using WebRTC
-export const acceptCall = async (callId) => {
+// Accept a call
+export const acceptCall = async (callId, roomId) => {
   try {
     if (!socket) {
       throw new Error('Socket not initialized');
     }
 
-    // Get call data from Firestore
-    const callRef = doc(db, CALLS_COLLECTION, callId);
-    const callDoc = await getDoc(callRef);
-    if (!callDoc.exists()) {
-      throw new Error('Call not found');
-    }
-    const callData = callDoc.data();
-    const roomId = callData.roomId;
+    console.log('Accepting call:', callId, 'room:', roomId);
 
     // Update call state in Firestore
+    const callRef = doc(db, CALLS_COLLECTION, callId);
     await updateDoc(callRef, {
       state: CALL_STATES.CONNECTED,
       acceptedTime: new Date()
     });
 
-    // Notify server that call is accepted
-    socket.emit('accept_call', { roomId });
+    // Set the room ID
+    currentRoomId = roomId;
+
+    // Notify caller that call is accepted
+    socket.emit('accept_call', { 
+      roomId: roomId,
+      callId: callId
+    });
 
     // Join the call room
-    socket.emit('join_room', { room: roomId });
+    joinCallRoom(roomId);
 
-    console.log('Call accepted:', callId, 'room:', roomId);
-    return { state: CALL_STATES.CONNECTED, acceptedTime: new Date() };
+    console.log('Call accepted, joined room:', roomId);
+    return { state: CALL_STATES.CONNECTED };
   } catch (error) {
     console.error('Error accepting call:', error);
     throw error;
   }
 };
 
-// End a call using WebRTC
-export const endCall = async (roomId) => {
+// End a call
+export const endCall = async (roomId, callId = null) => {
   try {
-    // Notify server that call is ended
+    console.log('Ending call:', roomId, 'callId:', callId);
+
+    // Leave the call room
+    leaveCallRoom(roomId);
+
+    // Notify other participants
     if (socket) {
-      socket.emit('end_call', { roomId, endedBy: 'user' });
+      socket.emit('end_call', { roomId: roomId });
     }
 
-    // Close peer connection
-    if (peerConnection) {
-      peerConnection.close();
-      peerConnection = null;
+    // Update call state in Firestore if callId is provided
+    if (callId) {
+      const callRef = doc(db, CALLS_COLLECTION, callId);
+      await updateDoc(callRef, {
+        state: CALL_STATES.ENDED,
+        endTime: new Date()
+      });
     }
 
-    // Stop local stream
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      localStream = null;
-    }
+    // Close peer connection and stop streams
+    closePeerConnection();
+    stopLocalStream();
 
-    console.log('Call ended:', roomId);
-    return { state: CALL_STATES.ENDED, endTime: new Date() };
+    currentRoomId = null;
+    console.log('Call ended successfully');
+    return { state: CALL_STATES.ENDED };
   } catch (error) {
     console.error('Error ending call:', error);
     throw error;
   }
 };
 
-// Listen for incoming calls
+// Reject a call
+export const rejectCall = async (callId, roomId) => {
+  try {
+    if (!socket) {
+      throw new Error('Socket not initialized');
+    }
+
+    console.log('Rejecting call:', callId);
+
+    // Update call state in Firestore
+    const callRef = doc(db, CALLS_COLLECTION, callId);
+    await updateDoc(callRef, {
+      state: 'rejected',
+      rejectedTime: new Date()
+    });
+
+    // Notify caller
+    socket.emit('reject_call', { roomId: roomId });
+
+    console.log('Call rejected');
+    return { state: 'rejected' };
+  } catch (error) {
+    console.error('Error rejecting call:', error);
+    throw error;
+  }
+};
+
+// Listen for incoming calls from Firestore
 export const listenForIncomingCalls = (userId, callback) => {
   console.log('Setting up listener for incoming calls for user:', userId);
 
@@ -277,32 +424,19 @@ export const listenForIncomingCalls = (userId, callback) => {
   });
 };
 
-// Listen for call updates
-export const listenForCallUpdates = (callId, callback) => {
-  const callRef = doc(db, CALLS_COLLECTION, callId);
-  return onSnapshot(callRef, (doc) => {
-    if (doc.exists()) {
-      callback({ id: doc.id, ...doc.data() });
-    }
-  });
-};
+// Send signaling message (offer/answer)
+export const sendSignalingMessage = (type, data, roomId) => {
+  if (!socket) {
+    console.error('Socket not initialized');
+    return;
+  }
 
-// Get call history
-export const getCallHistory = (userId, callback) => {
-  const q = query(
-    collection(db, CALLS_COLLECTION),
-    where('callerId', '==', userId),
-    or(where('receiverId', '==', userId)),
-    orderBy('startTime', 'desc'),
-    limit(50)
-  );
+  const room = roomId || currentRoomId;
+  console.log('Sending signaling message:', type, 'to room:', room);
 
-  return onSnapshot(q, (snapshot) => {
-    const calls = [];
-    snapshot.forEach((doc) => {
-      calls.push({ id: doc.id, ...doc.data() });
-    });
-    callback(calls);
+  socket.emit(type, {
+    room: room,
+    ...data
   });
 };
 
@@ -319,29 +453,29 @@ export const markCallAsMissed = async (callId) => {
   }
 };
 
-// WebRTC signaling functions
-export const sendSignalingMessage = async (callId, message) => {
+// Delete call document
+export const deleteCall = async (callId) => {
   try {
-    const signalingRef = collection(db, CALLS_COLLECTION, callId, 'signaling');
-    await addDoc(signalingRef, {
-      ...message,
-      timestamp: new Date()
-    });
+    await deleteDoc(doc(db, CALLS_COLLECTION, callId));
+    console.log('Call deleted:', callId);
   } catch (error) {
-    console.error('Error sending signaling message:', error);
-    throw error;
+    console.error('Error deleting call:', error);
   }
 };
 
-export const listenForSignalingMessages = (callId, callback) => {
-  const signalingRef = collection(db, CALLS_COLLECTION, callId, 'signaling');
-  const q = query(signalingRef, orderBy('timestamp', 'asc'));
-
-  return onSnapshot(q, (snapshot) => {
-    const messages = [];
-    snapshot.forEach((doc) => {
-      messages.push({ id: doc.id, ...doc.data() });
-    });
-    callback(messages);
-  });
+// Get call by ID
+export const getCallById = async (callId) => {
+  try {
+    const callDoc = await getDoc(doc(db, CALLS_COLLECTION, callId));
+    if (callDoc.exists()) {
+      return { id: callDoc.id, ...callDoc.data() };
+    }
+    return null;
+  } catch (error) {
+    console.error('Error getting call:', error);
+    return null;
+  }
 };
+
+// Export WebRTC helper functions
+export { peerConnection, localStream, remoteStream };
